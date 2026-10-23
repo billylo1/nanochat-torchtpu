@@ -25,6 +25,27 @@ from nanochat.optim import MuonAdamW
 # Our custom Flash Attention module that automatically uses FA3 when compatible and SDPA fallback otherwise
 from nanochat.flash_attention import flash_attn
 
+class _IndexAddEmbedding(torch.autograd.Function):
+    """Embedding lookup whose backward is an fp32 index_add_ rather than aten.embedding_dense_backward,
+    which torch_tpu 0.2.0 miscompiles (the backward executable expects a vocab-sized int64 input)."""
+    @staticmethod
+    def forward(ctx, idx, weight):
+        ctx.save_for_backward(idx)
+        ctx.weight_shape, ctx.weight_dtype = weight.shape, weight.dtype
+        return F.embedding(idx, weight)
+
+    @staticmethod
+    def backward(ctx, grad):
+        idx, = ctx.saved_tensors
+        grad_weight = torch.zeros(ctx.weight_shape, dtype=torch.float32, device=grad.device)
+        grad_weight.index_add_(0, idx.reshape(-1), grad.reshape(-1, grad.size(-1)).float())
+        return None, grad_weight.to(ctx.weight_dtype)
+
+def embed(embedding, idx):
+    if idx.device.type == "tpu":
+        return _IndexAddEmbedding.apply(idx, embedding.weight)
+    return embedding(idx)
+
 @dataclass
 class GPTConfig:
     sequence_len: int = 2048
@@ -468,7 +489,7 @@ class GPT(nn.Module):
         cos_sin = self.cos[:, T0:T0+T], self.sin[:, T0:T0+T] # truncate cache to current sequence length
 
         # Embed the tokens
-        x = self.transformer.wte(idx) # embed current token
+        x = embed(self.transformer.wte, idx) # embed current token
         x = x.to(COMPUTE_DTYPE) # ensure activations are in compute dtype (no-op usually, but active for fp16 code path)
         x = norm(x)
 
@@ -498,7 +519,7 @@ class GPT(nn.Module):
         x_backout = None
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
-            ve = self.value_embeds[str(i)](idx).to(x.dtype) if str(i) in self.value_embeds else None
+            ve = embed(self.value_embeds[str(i)], idx).to(x.dtype) if str(i) in self.value_embeds else None
             x = block(x, ve, cos_sin, self.window_sizes[i], kv_cache)
             if i == backout_layer:
                 x_backout = x

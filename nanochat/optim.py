@@ -259,17 +259,20 @@ class MuonAdamW(torch.optim.Optimizer):
     """
     def __init__(self, param_groups: list[dict]):
         super().__init__(param_groups, defaults={})
-        # 0-D CPU tensors to avoid torch.compile recompilation when values change
-        self._adamw_step_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_beta1_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_eps_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_momentum_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
+        # 0-D CPU tensors to avoid torch.compile recompilation when values change.
+        # torch_tpu compiled graphs only accept device tensors, so on TPU they live on the TPU instead.
+        device = self.param_groups[0]['params'][0].device
+        scalar_device = device if device.type == "tpu" else "cpu"
+        self._adamw_step_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._adamw_lr_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._adamw_beta1_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._adamw_beta2_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._adamw_eps_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._adamw_wd_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._muon_momentum_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
+        self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_device)
 
     def _reduce_adamw(self, group: dict, world_size: int) -> dict:
         """Launch async reduce ops for AdamW group. Returns info dict with per-param infos."""
