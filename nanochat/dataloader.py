@@ -118,6 +118,11 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
     cpu_targets = cpu_buffer[B * T:].view(B, T)
     inputs = gpu_buffer[:B * T].view(B, T)
     targets = gpu_buffer[B * T:].view(B, T)
+    # torch_tpu's compiled backward mis-sizes saved tensors that are views into a shared buffer,
+    # so on TPU inputs and targets get their own storage (two HtoD copies instead of one)
+    separate_buffers = torch.device(device).type == "tpu"
+    if separate_buffers:
+        inputs, targets = inputs.clone(), targets.clone()
 
     while True:
         for row_idx in range(B):
@@ -157,7 +162,11 @@ def tokenizing_distributed_data_loader_with_state_bos_bestfit(
         state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx, "epoch": epoch}
 
         # Single HtoD copy into persistent GPU buffer and yield
-        gpu_buffer.copy_(cpu_buffer, non_blocking=use_cuda)
+        if separate_buffers:
+            inputs.copy_(cpu_inputs)
+            targets.copy_(cpu_targets)
+        else:
+            gpu_buffer.copy_(cpu_buffer, non_blocking=use_cuda)
         yield inputs, targets, state_dict
 
 def tokenizing_distributed_data_loader_bos_bestfit(*args, **kwargs):
